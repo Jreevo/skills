@@ -1,0 +1,19 @@
+name: Test skill helpers
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-t3-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test t3-review helpers
+        run: python3 -I -m unittest discover -s skills/t3-review/tests -p 'test_*.py' -v

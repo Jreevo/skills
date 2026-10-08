@@ -1,8 +1,8 @@
 # Terminal subscription reviewers
 
-Use this route for a requested mixed-provider review when native agent tools
-cannot reach the other provider. OpenCode can prefer configured native model
-agents; `--terminal` selects this CLI route instead.
+This is the default route for a mixed-provider review, because native agent
+tools cannot reach the other provider. `--native` skips it. OpenCode can prefer
+configured native model agents; `--terminal` selects this CLI route instead.
 
 ## Requirements
 
@@ -36,6 +36,17 @@ Use the returned readiness information and recent failure evidence.
 The output excludes raw auth status, account email, org IDs, and credential values.
 Exit code 1 means a selected CLI is unavailable or the probe was cancelled.
 Inspect each probe reason; do not treat an empty result list as a successful panel.
+
+A sandboxed chair shell can hide a valid login. For example, Claude Code reports
+`loggedIn: false` inside Codex's command sandbox because the sandbox blocks its
+stored credentials, and sandboxed network rules can also block reviewer calls.
+When the chair's commands run in a host sandbox, treat a not-logged-in or provider
+error as **unverified**, not as a missing login. Rerun the probe, and later the
+panel, through the host's supported request to run that command outside the
+sandbox, so the user can approve it. Request it only for this runner, not for
+other commands, and do not change persistent sandbox or approval settings.
+If the host cannot request it or the user declines, report the seat as
+unavailable because of the sandbox and tell the user how to rerun with access.
 
 Desktop apps can use a different `PATH` from the user's terminal. If a selected
 CLI is installed but not found, use `--codex-bin` or `--claude-bin` with its

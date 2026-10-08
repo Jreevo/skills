@@ -29,5 +29,5 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Test t3-review helpers
         run: python3 -I -m unittest discover -s skills/t3-review/tests -p 'test_*.py' -v
-      - name: Test terminal reviewers
-        run: python3 -I -m unittest discover -s skills/codex-review/tests -p 'test_*.py' -v
+      - name: Test mixed-model-review terminal runner
+        run: python3 -I -m unittest discover -s skills/mixed-model-review/tests -p 'test_*.py' -v

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Codex Review"
-  short_description: "Review with separate Codex agent contexts"
-  default_prompt: "Use $codex-review to review the current diff."

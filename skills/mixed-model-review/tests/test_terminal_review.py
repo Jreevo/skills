@@ -330,11 +330,6 @@ class TerminalReviewTests(unittest.TestCase):
         self.assertTrue(all(v["status"] == "cancelled" and v["cleanup_confirmed"] for v in manifest["results"]))
         self.assertEqual(json.loads((root / 'manifest.json').read_text()), manifest)
 
-    def test_packaged_copies_are_identical(self):
-        source = (ROOT / "scripts/terminal_review.py").read_bytes()
-        for name in ["claude-review", "opencode-review"]:
-            self.assertEqual(source, (ROOT.parent / name / "scripts/terminal_review.py").read_bytes())
-
 
 if __name__ == "__main__":
     unittest.main()

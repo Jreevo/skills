@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mixed-Model Review"
+  short_description: "Review with separate agent contexts or a mixed-provider panel"
+  default_prompt: "Use $mixed-model-review to review the current diff."

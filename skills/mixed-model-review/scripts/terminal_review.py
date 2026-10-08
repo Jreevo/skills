@@ -122,6 +122,8 @@ def terminate_group(process):
             os.killpg(process.pid, sig)
         except ProcessLookupError:
             break
+        except PermissionError:
+            pass  # macOS reports EPERM for a group of exited, unreaped members.
         try:
             process.wait(timeout=budget)
         except subprocess.TimeoutExpired:
@@ -135,6 +137,8 @@ def terminate_group(process):
         os.killpg(process.pid, 0)
     except ProcessLookupError:
         return True
+    except PermissionError:
+        return False
     return False  # May include a not-yet-reaped descendant; do not claim cleanup.
 
 

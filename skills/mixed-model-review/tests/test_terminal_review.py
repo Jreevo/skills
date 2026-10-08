@@ -140,6 +140,12 @@ class TerminalReviewTests(unittest.TestCase):
         self.assertFalse(marker.exists())
         self.assertIn(outcome["status"], ["finished", "cleanup_unconfirmed"])
 
+    def test_group_permission_error_reports_unconfirmed_cleanup(self):
+        process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        process.wait()
+        with patch.object(r.os, "killpg", side_effect=PermissionError):
+            self.assertFalse(r.terminate_group(process))
+
     def test_cancel_event_terminates_a_real_process(self):
         executable = self.executable("import time\ntime.sleep(30)")
         r.STOP.set()

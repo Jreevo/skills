@@ -9,12 +9,15 @@ Each skill has its own folder in `skills/`. Keep its files together.
 | --- | --- | --- |
 | [codex-review](skills/codex-review/) | Standalone Codex | Native Codex agents using available GPT models |
 | [claude-review](skills/claude-review/) | Standalone Claude Code | Native Claude agents using available Claude models |
+| [opencode-review](skills/opencode-review/) | Standalone OpenCode | Native subagents using configured providers |
 | [t3-review](skills/t3-review/) | T3 Code | Configured providers through T3 delegation |
 
 The standalone versions use separate reviewer contexts and different review lenses.
 Reviewers inherit the configured model by default. They do not promise model diversity.
 They use manual risk assessment and need no separate triage API key or Python helper.
-Use `t3-review` for a panel that can span providers. It requires T3 Code, configured
+OpenCode can use models from its configured providers. This skill inherits the
+parent model by default. Use `t3-review` for a panel managed through T3 delegation.
+It requires T3 Code, configured
 model providers, Python 3, and macOS. Catalog availability does not prove spare quota.
 
 ## Install
@@ -60,6 +63,23 @@ Start a new Claude Code session. Run:
 ```
 
 See the [Claude Code guide](skills/claude-review/README.md).
+
+### OpenCode
+
+Install the skill:
+
+```sh
+mkdir -p ~/.config/opencode/skills
+cp -R jreevo-skills/skills/opencode-review ~/.config/opencode/skills/
+```
+
+Install the matching V1 or V2 reviewer file with the
+[OpenCode guide](skills/opencode-review/README.md#install).
+Start a new OpenCode session. Ask:
+
+```text
+Use the opencode-review skill to review the current diff.
+```
 
 ### T3 Code
 

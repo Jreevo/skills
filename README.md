@@ -1,13 +1,21 @@
 # Jerry's skills
 
 Agent skills created by [Jreevo](https://github.com/Jreevo).
-Each skill has its own folder in `skills/`. Keep all files in a skill folder together.
+Each skill has its own folder in `skills/`. Keep its files together.
 
 ## Skills
 
-| Skill | Purpose | Requirements |
+| Skill | Host | Reviewers |
 | --- | --- | --- |
-| [t3-review](skills/t3-review/) | Review code, plans, or copy with a panel of different models. Verify and merge their findings. | T3 Code, configured model providers, Python 3, and macOS. |
+| [codex-review](skills/codex-review/) | Standalone Codex | Native Codex agents using available GPT models |
+| [claude-review](skills/claude-review/) | Standalone Claude Code | Native Claude agents using available Claude models |
+| [t3-review](skills/t3-review/) | T3 Code | Configured providers through T3 delegation |
+
+The standalone versions use separate reviewer contexts and different review lenses.
+Reviewers inherit the configured model by default. They do not promise model diversity.
+They use manual risk assessment and need no separate triage API key or Python helper.
+Use `t3-review` for a panel that can span providers. It requires T3 Code, configured
+model providers, Python 3, and macOS. Catalog availability does not prove spare quota.
 
 ## Install
 
@@ -17,24 +25,48 @@ Clone this repository:
 git clone https://github.com/Jreevo/skills.git jreevo-skills
 ```
 
-For the Claude provider:
+### Codex
+
+Install both the skill and reviewer definition:
 
 ```sh
-mkdir -p ~/.claude/skills
-cp -R jreevo-skills/skills/t3-review ~/.claude/skills/
+mkdir -p ~/.agents/skills ~/.codex/agents
+cp -R jreevo-skills/skills/codex-review ~/.agents/skills/
+cp jreevo-skills/skills/codex-review/agents/codex-reviewer.toml ~/.codex/agents/
 ```
 
-For Codex:
+Start a new Codex session. Ask:
+
+```text
+Use $codex-review to review the current diff.
+```
+
+See the [Codex guide](skills/codex-review/README.md).
+
+### Claude Code
+
+Install both the skill and reviewer definition:
 
 ```sh
-mkdir -p ~/.codex/skills
-cp -R jreevo-skills/skills/t3-review ~/.codex/skills/
+mkdir -p ~/.claude/skills ~/.claude/agents
+cp -R jreevo-skills/skills/claude-review ~/.claude/skills/
+cp jreevo-skills/skills/claude-review/agents/claude-reviewer.md ~/.claude/agents/
 ```
 
-Start a new T3 Code conversation so the agent can load the skill.
+Start a new Claude Code session. Run:
+
+```text
+/claude-review
+```
+
+See the [Claude Code guide](skills/claude-review/README.md).
+
+### T3 Code
+
+Install `skills/t3-review` in `~/.claude/skills` for the Claude provider or
+`~/.agents/skills` for the Codex provider. Start a new T3 Code conversation.
 Ask: **Use the t3-review skill to review the current diff.**
-Use `/t3-review` where the provider supports skill commands.
-Read the [t3-review guide](skills/t3-review/README.md) for options and requirements.
+See the [T3 guide](skills/t3-review/README.md) for requirements and options.
 
 ## Add a skill
 

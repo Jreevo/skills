@@ -36,6 +36,12 @@ If a mixed-provider panel is unavailable, state the gap before using a native
 panel or a single-reviewer fallback. Do not claim model diversity from one model.
 Python 3.10+ and a POSIX host are required only for this terminal route.
 
+Probe CLI versions and eligible logins before terminal dispatch. Use absolute
+CLI paths if the host has an incomplete `PATH`. Save the run ID and private
+artifact path. Recover a lost response from that run's status files before
+starting another panel. A missing seat or unconfirmed cleanup is incomplete.
+Do not remove safety flags to support an older CLI.
+
 ## Native Codex dispatch
 
 - Inspect the native agent tools and installed reviewer types in this session.

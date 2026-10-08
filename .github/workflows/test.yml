@@ -8,13 +8,25 @@ permissions:
   contents: read
 
 jobs:
-  test-t3-review:
-    runs-on: ubuntu-latest
+  test-skill-helpers:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.10'
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: macos-15-intel
+            python: '3.10'
+          - os: macos-latest
+            python: '3.12'
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python }}
       - name: Test t3-review helpers
         run: python3 -I -m unittest discover -s skills/t3-review/tests -p 'test_*.py' -v
       - name: Test terminal reviewers

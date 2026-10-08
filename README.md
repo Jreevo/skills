@@ -22,6 +22,24 @@ parent model by default. Use `t3-review` for a panel managed through T3 delegati
 It requires T3 Code, configured
 model providers, Python 3, and macOS. Catalog availability does not prove spare quota.
 
+## Host compatibility
+
+Use the version for your active host. Each native agent API has different fields.
+The skill checks actual capabilities before dispatch. A skill folder alone does
+not give a chat application terminal access or native agent tools.
+
+The packaged terminal helper can run from another harness that permits Python,
+local CLI processes, result inspection, and cancellation. Use the
+[terminal guide](skills/codex-review/references/terminal-review.md) directly.
+This route supports macOS, Linux, and WSL. It requires Codex 0.160.1+ and Claude
+Code 2.1.292+ with eligible logins in that environment. Native Windows Python
+is not supported. Remote hosts need their own accessible CLI installations.
+
+The runner accepts absolute CLI paths when a desktop app has an incomplete
+`PATH`. It saves private progress and results so a lost tool response does not
+require another panel. Unsupported versions and unavailable seats stay visible.
+Other harnesses have not been tested end to end. See each skill's validation notes.
+
 ## Use existing subscriptions
 
 Install Codex and Claude Code, then sign in through their normal CLI login flows.

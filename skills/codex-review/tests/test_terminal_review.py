@@ -4,6 +4,9 @@ import json
 import os
 from pathlib import Path
 import stat
+import signal
+import subprocess
+import time
 import sys
 import tempfile
 import unittest
@@ -31,7 +34,10 @@ class TerminalReviewTests(unittest.TestCase):
 
     def executable(self, body):
         path = self.root / "fake-cli"
-        path.write_text("#!" + sys.executable + "\n" + body)
+        path.write_text("#!" + sys.executable + "\nimport sys\n"
+                        "if '--version' in sys.argv:\n    print('2.1.292'); raise SystemExit(0)\n"
+                        "if sys.argv[-2:] == ['features', 'list']:\n    print(" +
+                        repr("\n".join(f + " stable false" for f in r.CODEX_FEATURES)) + "); raise SystemExit(0)\n" + body)
         path.chmod(stat.S_IRWXU)
         return str(path)
 
@@ -79,6 +85,12 @@ class TerminalReviewTests(unittest.TestCase):
             self.assertEqual(got, review())
             self.assertEqual(models, [])
 
+    def test_denied_tool_attempt_is_not_accepted_as_packet_only_review(self):
+        wrapper = dict(type="result", subtype="success", is_error=False, result=json.dumps(review()),
+                       permission_denials=[{"tool_name": "Bash"}])
+        with self.assertRaises(ValueError):
+            r.parse_result("claude", {"stdout": json.dumps(wrapper)}, self.root, "snapshot")
+
     def test_wrong_snapshot_empty_inspection_and_malformed_finding_fail(self):
         for value in [review("other"), dict(review(), inspected=[]), dict(review(), findings=[{}])]:
             with self.assertRaises(ValueError):
@@ -117,6 +129,17 @@ class TerminalReviewTests(unittest.TestCase):
         self.assertIsNotNone(outcome["returncode"])
         self.assertLess(outcome["duration_seconds"], 5)
 
+    def test_children_are_stopped_when_the_cli_leader_exits(self):
+        marker = self.root / "orphan-kept-running"
+        executable = self.executable("import os,signal,time\nfrom pathlib import Path\n"
+            "if os.fork() == 0:\n    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "    time.sleep(1.5)\n    Path(" + repr(str(marker)) + ").touch()\n    os._exit(0)\n"
+            "os._exit(0)\n")
+        outcome = r.execute([executable], self.root / "call", r.child_environment(), 5)
+        time.sleep(1.6)
+        self.assertFalse(marker.exists())
+        self.assertIn(outcome["status"], ["finished", "cleanup_unconfirmed"])
+
     def test_cancel_event_terminates_a_real_process(self):
         executable = self.executable("import time\ntime.sleep(30)")
         r.STOP.set()
@@ -152,6 +175,7 @@ class TerminalReviewTests(unittest.TestCase):
             result = r.run_seat(1, r.parse_seat("claude"), {"ready": False, "reason": "missing_cli"},
                                 {}, "snapshot", "security", self.root, {}, 5)
             self.assertEqual(result["status"], "unavailable")
+            self.assertEqual(json.loads((self.root / "seat-1/result.json").read_text()), result)
             execute.assert_not_called()
 
     def test_packet_is_complete_hashed_and_not_truncated(self):
@@ -175,6 +199,136 @@ class TerminalReviewTests(unittest.TestCase):
                                    "snapshot", "correctness", "prior finding")
         self.assertIn('"snapshot_id": "snapshot"', prompt)
         self.assertIn("<untrusted_rebuttal_context>\nprior finding", prompt)
+
+    def test_old_cli_is_blocked_before_authentication_or_inference(self):
+        executable = self.root / "old-cli"
+        marker = self.root / "must-not-dispatch"
+        executable.write_text("#!" + sys.executable + "\nimport sys\nfrom pathlib import Path\n"
+                              "if sys.argv[1:] == ['--version']:\n    print('codex-cli 0.159.0')\n"
+                              "else:\n    Path(" + repr(str(marker)) + ").touch()\n")
+        executable.chmod(0o700)
+        outcome = r.probe("codex", r.child_environment(), self.root, str(executable))
+        self.assertEqual(outcome["reason"], "unsupported_cli")
+        self.assertEqual(outcome["version"], "0.159.0")
+        self.assertFalse(marker.exists())
+
+    def test_cli_with_ignored_safety_feature_is_blocked_before_inference(self):
+        executable = self.root / "incompatible-cli"
+        marker = self.root / "must-not-dispatch"
+        executable.write_text("#!" + sys.executable + "\nimport sys\nfrom pathlib import Path\n"
+            "if sys.argv[1:] == ['--version']:\n    print('codex-cli 0.160.1')\n"
+            "elif sys.argv[-2:] == ['features','list']:\n    print('shell_tool stable true')\n"
+            "else:\n    Path(" + repr(str(marker)) + ").touch()\n")
+        executable.chmod(0o700)
+        outcome = r.probe("codex", r.child_environment(), self.root, str(executable))
+        self.assertEqual(outcome["reason"], "unsupported_cli_controls")
+        self.assertFalse(marker.exists())
+
+    def test_large_raw_packet_and_final_file_are_bounded(self):
+        path = self.root / "large.json"
+        path.write_text(" " * 100)
+        with patch.object(r, "MAX_INPUT_BYTES", 50), self.assertRaises(ValueError):
+            r.load_packet(path)
+        (self.root / "review.json").write_text(json.dumps(review()))
+        with patch.object(r, "MAX_OUTPUT_BYTES", 50), self.assertRaises(ValueError):
+            r.parse_result("codex", {"stdout": '{"type":"turn.completed"}'}, self.root, "snapshot")
+
+    def test_cli_file_output_is_part_of_output_budget(self):
+        destination = self.root / "large-output.json"
+        executable = self.executable("from pathlib import Path\nPath(" + repr(str(destination)) + ").write_text('x'*1000)")
+        with patch.object(r, "MAX_OUTPUT_BYTES", 50):
+            outcome = r.execute([executable], self.root / "call", r.child_environment(), 5,
+                                output_paths=(destination,))
+        self.assertEqual(outcome["status"], "output_limit")
+        self.assertTrue(outcome["cleanup_confirmed"])
+
+    def test_bom_and_plain_json_fence_preserve_review_and_reject_noise(self):
+        for text in ["\ufeff" + json.dumps(review()), "```\n" + json.dumps(review()) + "\n```"]:
+            self.assertEqual(r.decode_json(text), review())
+        with self.assertRaises(ValueError):
+            r.decode_json("log noise\n" + json.dumps(review()))
+        with self.assertRaises(ValueError):
+            r.parse_result("claude", {"stdout": '[null]'}, self.root, "snapshot")
+
+    def fake_subscription_cli(self, provider, delay=0):
+        executable = self.root / (provider + " cli with spaces")
+        auth = "Logged in using ChatGPT" if provider == "codex" else json.dumps(
+            dict(loggedIn=True, authMethod="claude.ai", apiProvider="firstParty"))
+        version = "codex-cli 0.160.1" if provider == "codex" else "2.1.292 (Claude Code)"
+        body = ("import sys,json,re,time\nfrom pathlib import Path\n"
+                "if sys.argv[1:] == ['--version']:\n    print(" + repr(version) + "); raise SystemExit(0)\n"
+                "if sys.argv[-2:] == ['features','list']:\n    print(" + repr("\n".join(f + " stable false" for f in r.CODEX_FEATURES)) + "); raise SystemExit(0)\n"
+                "if sys.argv[1:] in [['login','status'], ['auth','status']]:\n    print(" + repr(auth) + "); raise SystemExit(0)\n"
+                "text=sys.stdin.read()\ntime.sleep(" + repr(delay) + ")\n"
+                "snapshot=re.search(r'\"snapshot_id\": \"([^\"]+)\"', text).group(1)\n"
+                "value=" + repr(review()) + "\nvalue['snapshot_id']=snapshot\n")
+        if provider == "codex":
+            body += ("Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text(json.dumps(value))\n"
+                     "print(json.dumps({'type':'turn.started'}))\nprint(json.dumps({'type':'turn.completed'}))\n")
+        else:
+            body += "print(json.dumps(dict(type='result', subtype='success', is_error=False, result=json.dumps(value))))\n"
+        executable.write_text("#!" + sys.executable + "\n" + body)
+        executable.chmod(0o700)
+        return executable
+
+    def panel_command(self, delay=0):
+        packet = self.root / "packet.json"
+        packet.write_text(json.dumps(dict(goal="review", decisions=[], author_models=["unknown"], work="complete target")))
+        return [sys.executable, "-I", str(ROOT / "scripts/terminal_review.py"), "run", "--packet", str(packet),
+                "--reviewer", "codex", "--reviewer", "claude",
+                "--codex-bin", str(self.fake_subscription_cli("codex", delay)),
+                "--claude-bin", str(self.fake_subscription_cli("claude", delay)), "--timeout-seconds", "30"]
+
+    def test_full_panel_works_with_explicit_paths_and_private_durable_manifest(self):
+        completed = subprocess.run(self.panel_command(), env=dict(os.environ, PATH="/missing", TMPDIR=str(self.root)),
+                                   capture_output=True, text=True, timeout=20)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        started = json.loads(completed.stderr.splitlines()[0])
+        manifest = json.loads(completed.stdout)
+        self.assertEqual(started["artifacts"], manifest["artifacts"])
+        self.assertEqual(manifest["status"], "completed")
+        self.assertEqual([v["status"] for v in manifest["results"]], ["completed", "completed"])
+        root = Path(manifest["artifacts"])
+        self.assertEqual(json.loads((root / "manifest.json").read_text()), manifest)
+        self.assertEqual((root / "manifest.json").stat().st_mode & 0o777, 0o600)
+        for seat in manifest["results"]:
+            self.assertTrue(seat["cleanup_confirmed"])
+            self.assertEqual(seat["review"]["snapshot_id"], manifest["snapshot_id"])
+
+    def test_missing_seat_produces_incomplete_manifest_without_losing_completed_seat(self):
+        command = self.panel_command()
+        command[command.index('--claude-bin') + 1] = str(self.root / 'missing-cli')
+        completed = subprocess.run(command, env=dict(os.environ, TMPDIR=str(self.root)),
+                                   capture_output=True, text=True, timeout=20)
+        self.assertEqual(completed.returncode, 1)
+        manifest = json.loads(completed.stdout)
+        self.assertEqual(manifest["status"], "incomplete")
+        self.assertEqual([v["status"] for v in manifest["results"]], ["completed", "unavailable"])
+        self.assertEqual(manifest["results"][1]["reason"], "missing_cli")
+        root = Path(manifest["artifacts"])
+        self.assertEqual(json.loads((root / 'seat-2/result.json').read_text()), manifest["results"][1])
+
+    def test_sigterm_cancels_full_panel_and_preserves_each_seat_outcome(self):
+        process = subprocess.Popen(self.panel_command(delay=30), env=dict(os.environ, TMPDIR=str(self.root)),
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        started = json.loads(process.stderr.readline())
+        root = Path(started["artifacts"])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if all((root / ('seat-' + str(i)) / 'session/stdin.txt').exists() for i in [1, 2]):
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("Panel did not start both seats")
+        process.send_signal(signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 1, stderr)
+        manifest = json.loads(stdout)
+        self.assertEqual(manifest["status"], "cancelled")
+        self.assertEqual(len(manifest["results"]), 2)
+        self.assertTrue(all(v["status"] == "cancelled" and v["cleanup_confirmed"] for v in manifest["results"]))
+        self.assertEqual(json.loads((root / 'manifest.json').read_text()), manifest)
 
     def test_packaged_copies_are_identical(self):
         source = (ROOT / "scripts/terminal_review.py").read_bytes()

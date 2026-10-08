@@ -4,10 +4,12 @@
 Python 3.10+, macOS/Linux/WSL. No SDK, API keys, or shell command interpolation.
 """
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -26,7 +28,15 @@ ENV_KEYS = {
     "https_proxy", "http_proxy", "all_proxy", "no_proxy",
 }
 MAX_PACKET_CHARS = 200_000
+MAX_INPUT_BYTES = 2_000_000
 MAX_OUTPUT_BYTES = 8_000_000
+MIN_VERSIONS = {"codex": (0, 160, 1), "claude": (2, 1, 292)}
+# shell_tool gates both shell command implementations. unified_exec selects
+# the backend and current Codex keeps it enabled regardless of this override.
+CODEX_FEATURES = ("shell_tool", "apps", "plugins", "hooks", "memories",
+                  "browser_use", "computer_use", "image_generation", "view_image",
+                  "skill_search", "skill_mcp_dependency_install", "code_mode_host",
+                  "multi_agent", "multi_agent_v2", "tool_suggest", "sleep_tool")
 STOP = threading.Event()
 RULES = """You are a reviewer of the complete inline packet only.
 Do not use tools, read local files or credentials, run commands, write files,
@@ -72,6 +82,26 @@ def private_write(path, data):
         handle.write(data)
 
 
+def private_replace(path, value):
+    """Publish a complete status file atomically with mode 0600."""
+    fd, temporary = tempfile.mkstemp(prefix=".status-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def bounded_text(path, limit):
+    with Path(path).open("rb") as handle:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("Input exceeds its byte limit; split the target without truncation.")
+    return data.decode("utf-8-sig")
+
+
 def failure_kind(text):
     text = text.lower()
     if any(word in text for word in ["spend limit", "usage limit", "quota", "rate limit", "overloaded", "monthly limit"]):
@@ -108,7 +138,7 @@ def terminate_group(process):
     return False  # May include a not-yet-reaped descendant; do not claim cleanup.
 
 
-def execute(command, directory, env, timeout, stdin_text=""):
+def execute(command, directory, env, timeout, stdin_text="", output_paths=()):
     """Bound a CLI call and preserve raw output privately, without streaming it."""
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     input_path = directory / "stdin.txt"
@@ -116,6 +146,8 @@ def execute(command, directory, env, timeout, stdin_text=""):
     stdout_path, stderr_path = directory / "stdout.txt", directory / "stderr.txt"
     private_write(stdout_path, "")
     private_write(stderr_path, "")
+    def output_size():
+        return sum(p.stat().st_size for p in (stdout_path, stderr_path, *output_paths) if p.exists())
     process = None
     status = "finished"
     cleanup = None
@@ -124,6 +156,8 @@ def execute(command, directory, env, timeout, stdin_text=""):
         with input_path.open(encoding="utf-8") as source, stdout_path.open("w") as out, stderr_path.open("w") as err:
             process = subprocess.Popen(command, cwd=directory, env=env, stdin=source,
                                        stdout=out, stderr=err, start_new_session=True)
+            private_write(directory / "process.json", json.dumps({"pid": process.pid,
+                "process_group": process.pid, "runner_pid": os.getpid()}))
             while process.poll() is None:
                 if STOP.is_set():
                     status, cleanup = "cancelled", terminate_group(process)
@@ -131,7 +165,7 @@ def execute(command, directory, env, timeout, stdin_text=""):
                 if time.monotonic() - start >= timeout:
                     status, cleanup = "timed_out", terminate_group(process)
                     break
-                if stdout_path.stat().st_size + stderr_path.stat().st_size > MAX_OUTPUT_BYTES:
+                if output_size() > MAX_OUTPUT_BYTES:
                     status, cleanup = "output_limit", terminate_group(process)
                     break
                 time.sleep(0.05)
@@ -139,8 +173,12 @@ def execute(command, directory, env, timeout, stdin_text=""):
         if process is not None:
             terminate_group(process)
         raise
-    if status == "finished" and stdout_path.stat().st_size + stderr_path.stat().st_size > MAX_OUTPUT_BYTES:
+    if status == "finished" and output_size() > MAX_OUTPUT_BYTES:
         status, cleanup = "output_limit", terminate_group(process)
+    if cleanup is None:
+        cleanup = terminate_group(process)
+    if not cleanup and status == "finished":
+        status = "cleanup_unconfirmed"
     def bounded_read(path):
         with path.open("rb") as handle:
             return handle.read(MAX_OUTPUT_BYTES).decode("utf-8", errors="replace")
@@ -159,14 +197,52 @@ def parse_seat(value):
     return {"provider": provider, "model": model if sep else None}
 
 
-def probe(provider, env, root):
-    executable = shutil.which(provider, path=env.get("PATH"))
+def probe(provider, env, root, executable_override=None):
+    executable = shutil.which(executable_override or provider, path=env.get("PATH", os.defpath))
     result = {"provider": provider, "executable": executable, "ready": False,
-              "auth": "unverified", "reason": "missing_cli"}
+              "auth": "unverified", "version": None, "reason": "missing_cli"}
     if executable is None:
         return result
-    command = [executable, "login", "status"] if provider == "codex" else [executable, "auth", "status"]
+    executable = str(Path(executable).absolute())
+    result["executable"] = executable
     try:
+        version = execute([executable, "--version"], root / (provider + "-version"), env, 15)
+        result.update(returncode=version["returncode"], cleanup_confirmed=version["cleanup_confirmed"])
+        if version["status"] != "finished":
+            result["reason"] = version["status"]
+            return result
+        match = re.fullmatch(r"(?:codex(?:-cli)?\s+)?(\d+)\.(\d+)\.(\d+)(?: \(Claude Code\))?",
+                             version["stdout"].strip())
+        if version["returncode"] != 0 or match is None:
+            result["reason"] = "version_probe_failed"
+            return result
+        found = tuple(map(int, match.groups()))
+        result["version"] = ".".join(map(str, found))
+        if found < MIN_VERSIONS[provider]:
+            result["reason"] = "unsupported_cli"
+            return result
+        if STOP.is_set():
+            result["reason"] = "cancelled"
+            return result
+        if provider == "codex":
+            controls = [executable, "--no-daemon"]
+            for feature in CODEX_FEATURES:
+                controls += ["-c", "features." + feature + "=false"]
+            controls += ["features", "list"]
+            checked = execute(controls, root / "codex-controls", env, 15)
+            result.update(returncode=checked["returncode"], cleanup_confirmed=checked["cleanup_confirmed"])
+            disabled = set()
+            for line in checked["stdout"].splitlines():
+                fields = line.split()
+                if len(fields) >= 3 and fields[-1] == "false" and "removed" not in fields:
+                    disabled.add(fields[0])
+            if checked["status"] != "finished":
+                result["reason"] = checked["status"]
+                return result
+            if checked["returncode"] != 0 or not set(CODEX_FEATURES).issubset(disabled):
+                result["reason"] = "unsupported_cli_controls"
+                return result
+        command = [executable, "login", "status"] if provider == "codex" else [executable, "auth", "status"]
         status = execute(command, root / (provider + "-auth"), env, 15)
         result.update(returncode=status["returncode"], cleanup_confirmed=status["cleanup_confirmed"])
         if status["status"] != "finished":
@@ -190,7 +266,7 @@ def probe(provider, env, root):
 
 
 def load_packet(path):
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    value = json.loads(bounded_text(path, MAX_INPUT_BYTES))
     if not isinstance(value, dict) or set(value) != {"goal", "decisions", "author_models", "work"}:
         raise ValueError("Packet needs exactly goal, decisions, author_models, and work.")
     if any(not isinstance(value[k], str) or not value[k].strip() for k in ["goal", "work"]):
@@ -228,13 +304,9 @@ def command_for(seat, executable, directory):
                "--color", "never", "--output-schema", str(directory / "schema.json"),
                "--output-last-message", str(directory / "review.json"), *model]
     # These are per-call overrides. Do not edit the user's CLI configuration.
-    settings = {"agents.enabled": "false", "features.shell_tool": "false",
-                "features.unified_exec": "false", "features.apps": "false",
-                "features.plugins": "false", "features.hooks": "false",
-                "features.memories": "false", "features.browser_use": "false",
-                "features.computer_use": "false", "features.image_generation": "false",
-                "features.code_mode_host": "false", "web_search": '"disabled"',
+    settings = {"agents.enabled": "false", "web_search": '"disabled"',
                 "developer_instructions": json.dumps(RULES)}
+    settings.update({"features." + feature: "false" for feature in CODEX_FEATURES})
     for key, value in settings.items():
         command += ["-c", key + "=" + value]
     return command + ["-"]
@@ -266,9 +338,9 @@ def validate_review(value, snapshot):
 
 
 def decode_json(text):
-    text = text.strip()
-    if text.startswith("```json\n") and text.endswith("```"):
-        text = text[8:-3]
+    text = text.lstrip("\ufeff").strip()
+    if text.startswith(("```json\n", "```\n")) and text.endswith("```"):
+        text = text.split("\n", 1)[1][:-3]
     return json.loads(text)
 
 
@@ -291,9 +363,11 @@ def parse_result(provider, captured, directory, snapshot):
             if (event.get("type") in ["error", "turn.failed"] or
                     item.get("type") not in [None, "agent_message", "reasoning"]):
                 raise ValueError("CLI failed or used tools during packet-only review.")
-        return validate_review(decode_json((directory / "review.json").read_text(encoding="utf-8")), snapshot), []
+        return validate_review(decode_json(bounded_text(directory / "review.json", MAX_OUTPUT_BYTES)), snapshot), []
     raw = json.loads(captured["stdout"])
     messages = raw if isinstance(raw, list) else [raw]
+    if any(not isinstance(message, dict) for message in messages):
+        raise ValueError("Invalid CLI message.")
     for message in messages:
         if message.get("type") == "assistant":
             if any(block.get("type") == "tool_use" for block in message.get("message", {}).get("content", [])):
@@ -302,6 +376,8 @@ def parse_result(provider, captured, directory, snapshot):
     if len(results) != 1:
         raise ValueError("Missing or ambiguous terminal result.")
     result = results[0]
+    if result.get("permission_denials"):
+        raise ValueError("Claude attempted a tool requiring permission.")
     if result.get("is_error") is not False or result.get("subtype") != "success":
         raise RuntimeError(failure_kind(str(result.get("result", ""))))
     value = result.get("structured_output")
@@ -319,14 +395,23 @@ def run_seat(index, seat, readiness, packet, snapshot, lens, root, env, timeout,
               "status": "unavailable", "reason": readiness["reason"], "review": None,
               "artifacts": str(directory), "cleanup_confirmed": None, "cost": "unknown"}
     if not readiness["ready"]:
+        if readiness["reason"] == "cancelled":
+            result.update(status="cancelled")
+        private_replace(directory / "result.json", result)
         return result
     if STOP.is_set():
         result.update(status="cancelled", reason="cancelled")
         private_write(directory / "result.json", json.dumps(result, indent=2))
         return result
     try:
+        started = datetime.now(timezone.utc)
+        result.update(status="running", reason=None, started_at=started.isoformat(),
+                      deadline_at=(started + timedelta(seconds=timeout)).isoformat(), timeout_seconds=timeout)
+        private_replace(directory / "result.json", result)
         command = command_for(seat, readiness["executable"], directory)
-        captured = execute(command, directory / "session", env, timeout, reviewer_prompt(packet, snapshot, lens, rebuttal))
+        captured = execute(command, directory / "session", env, timeout,
+                           reviewer_prompt(packet, snapshot, lens, rebuttal),
+                           output_paths=(directory / "review.json",))
         result.update(duration_seconds=captured["duration_seconds"], returncode=captured["returncode"],
                       cleanup_confirmed=captured["cleanup_confirmed"])
         if captured["status"] != "finished":
@@ -340,7 +425,7 @@ def run_seat(index, seat, readiness, packet, snapshot, lens, root, env, timeout,
         result.update(status="failed", reason=str(exc))
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         result.update(status="failed", reason="invalid_result_or_cli_failure")
-    private_write(directory / "result.json", json.dumps(result, indent=2))
+    private_replace(directory / "result.json", result)
     return result
 
 
@@ -352,12 +437,17 @@ def main():
     parser.add_argument("--rebuttal", help="Prior findings/responses for one requested rebuttal; packet hash is unchanged")
     parser.add_argument("--lens", action="append", help="Primary lens, in seat order")
     parser.add_argument("--timeout-seconds", type=int, default=600)
+    parser.add_argument("--codex-bin", help="Absolute path to the Codex executable when PATH is incomplete")
+    parser.add_argument("--claude-bin", help="Absolute path to the Claude Code executable when PATH is incomplete")
     parser.add_argument("--dry-run", action="store_true", help="No reviewer inference; auth probes only")
     args = parser.parse_args()
     if os.name != "posix":
         parser.error("Use macOS, Linux, or WSL for process-group cleanup.")
     if not 1 <= len(args.reviewer) <= 4 or not 1 <= args.timeout_seconds <= 3600:
         parser.error("Use 1-4 seats and a timeout from 1 to 3600 seconds.")
+    overrides = {"codex": args.codex_bin, "claude": args.claude_bin}
+    if any(v is not None and not Path(v).is_absolute() for v in overrides.values()):
+        parser.error("CLI overrides must be absolute executable paths, without shell arguments.")
     seats = [parse_seat(v) for v in args.reviewer]
     lenses = args.lens or ["correctness", "security and data safety", "requirements and edge cases", "maintainability"][:len(seats)]
     if len(lenses) != len(seats) or any(not v.strip() for v in lenses):
@@ -369,28 +459,60 @@ def main():
             parser.error("run requires --packet")
         packet, snapshot = load_packet(args.packet)
         if args.rebuttal:
-            rebuttal = Path(args.rebuttal).read_text(encoding="utf-8")
+            rebuttal = bounded_text(args.rebuttal, MAX_INPUT_BYTES)
+            if not rebuttal.strip():
+                parser.error("Rebuttal context must be nonempty.")
             if len(rebuttal) + len(json.dumps(packet, ensure_ascii=False)) > MAX_PACKET_CHARS:
                 parser.error("Packet and rebuttal exceed the input limit; do not truncate them.")
     STOP.clear()
-    for sig in [signal.SIGTERM, signal.SIGINT]:
+    for sig in [signal.SIGTERM, signal.SIGINT, signal.SIGHUP]:
         signal.signal(sig, lambda *_: STOP.set())
     root = Path(tempfile.mkdtemp(prefix="terminal-review-"))
     env = child_environment()
-    providers = sorted({s["provider"] for s in seats})
-    readiness = {p: probe(p, env, root) for p in providers}
-    output = {"artifacts": str(root), "snapshot_id": snapshot, "probes": list(readiness.values()),
-              "planned_seats": [{**s, "lens": lens} for s, lens in zip(seats, lenses)], "results": []}
-    if args.action == "run" and not args.dry_run:
+    output = {"format_version": 1, "run_id": root.name, "runner_pid": os.getpid(),
+              "artifacts": str(root), "snapshot_id": snapshot, "status": "probing",
+              "created_at": datetime.now(timezone.utc).isoformat(),
+              "round": 2 if args.rebuttal else 1,
+              "rebuttal_sha256": hashlib.sha256(rebuttal.encode()).hexdigest() if args.rebuttal else None,
+              "probes": [], "planned_seats": [dict(s, seat=i, lens=lens)
+                  for i, (s, lens) in enumerate(zip(seats, lenses), 1)], "results": []}
+    manifest = root / "manifest.json"
+    private_replace(manifest, output)
+    print(json.dumps({"event": "review_started", "artifacts": str(root),
+                      "runner_pid": os.getpid(), "run_id": root.name}), file=sys.stderr, flush=True)
+    if args.action == "run":
         private_write(root / "packet.json", json.dumps(packet, ensure_ascii=False))
+        if args.rebuttal:
+            private_write(root / "rebuttal.txt", rebuttal)
+    readiness = {}
+    for provider in sorted({s["provider"] for s in seats}):
+        if STOP.is_set():
+            ready = {"provider": provider, "ready": False, "reason": "cancelled",
+                     "executable": None, "auth": "unverified", "version": None}
+        else:
+            ready = probe(provider, env, root, overrides[provider])
+        readiness[provider] = ready
+        output["probes"].append(ready)
+        private_replace(manifest, output)
+    if args.action == "run" and not args.dry_run:
+        output["status"] = "running"
+        private_replace(manifest, output)
         with ThreadPoolExecutor(max_workers=len(seats)) as pool:
             futures = [pool.submit(run_seat, i, s, readiness[s["provider"]], packet, snapshot,
                                    lenses[i-1], root, env, args.timeout_seconds, rebuttal)
                        for i, s in enumerate(seats, 1)]
-            output["results"] = [f.result() for f in futures]
-        private_write(root / "manifest.json", json.dumps(output, indent=2))
+            for future in as_completed(futures):
+                output["results"].append(future.result())
+                output["results"].sort(key=lambda result: result["seat"])
+                private_replace(manifest, output)
+        output["status"] = "completed" if all(r["status"] == "completed" for r in output["results"]) else "incomplete"
+    else:
+        output["status"] = "probed"
+    if STOP.is_set():
+        output["status"] = "cancelled"
+    private_replace(manifest, output)
     print(json.dumps(output, indent=2))
-    if output["results"] and any(r["status"] != "completed" for r in output["results"]):
+    if STOP.is_set() or any(not p["ready"] for p in output["probes"]) or any(r["status"] != "completed" for r in output["results"]):
         return 1
     return 0
 

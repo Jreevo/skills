@@ -38,6 +38,12 @@ Do not replace a failed subscription seat with an API-key route. If the requeste
 mixed panel cannot be filled, report the gap before offering a native or chair
 fallback. Python 3.10+ and a POSIX host are needed only for the terminal route.
 
+Probe CLI versions and eligible logins before terminal dispatch. Use absolute
+CLI paths if the host has an incomplete `PATH`. Save the run ID and private
+artifact path. Recover a lost response from that run's status files before
+starting another panel. A missing seat or unconfirmed cleanup is incomplete.
+Do not remove safety flags to support an older CLI.
+
 ## Native OpenCode dispatch
 
 - Inspect the current tool schema and available subagent catalog. V1 uses the

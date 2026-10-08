@@ -109,3 +109,14 @@ passed synthetic tests. Codex's exact runtime model identity was not exposed;
 Claude result metadata reported `claude-opus-5-5`. OpenCode host execution remains
 unverified because its local executable does not start. No account or billing
 configuration was changed.
+
+Portability validation (2026-10-08): all 48 helper tests passed locally. The
+terminal runner passed full-panel fixtures with explicit CLI paths, an empty
+`PATH`, paths with spaces, an unavailable seat, and SIGTERM cancellation. It
+also tested oversized files and children left after normal CLI exit. CI runs
+the helper suites on Linux and macOS with Python 3.10 and 3.12.
+A fresh live Codex + Claude subscription panel passed with the updated controls,
+matching snapshot IDs, no observed tool use, and confirmed child cleanup.
+Codex's required feature controls are checked without inference before dispatch.
+These checks do not establish native OpenCode execution or native panel support
+in other harnesses.

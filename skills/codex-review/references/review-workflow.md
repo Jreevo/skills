@@ -1,5 +1,21 @@
 # Review workflow
 
+## Check the current host
+
+Check the actual tool schema before using a native agent route. The host name
+in a skill file does not prove that those tools are available. Do not translate
+Codex spawn fields into Claude Agent or OpenCode Task/subagent fields by guess.
+If another harness loads this skill, use the packaged terminal route only when
+that route was requested and the host can start, inspect, and cancel processes.
+Otherwise report a single-reviewer fallback with the missing capability.
+In T3 Code, use `t3-review` when the user wants T3-managed delegation.
+
+Keep the skill folder and its references together. Resolve scripts from the
+loaded skill directory. Do not assume the source checkout is the install path.
+Avoid installing duplicate copies in compatibility directories that the host
+also scans. Verify the active reviewer definition after installation or update.
+Do not create or modify global agent configuration during a review.
+
 ## Capture the target
 
 Resolve the target and capture the complete diff or document before dispatch.

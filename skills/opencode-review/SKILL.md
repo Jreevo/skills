@@ -1,6 +1,6 @@
 ---
 name: opencode-review
-description: Review code, plans, or copy in standalone OpenCode with native reviewer subagents and manual risk assessment. Use for a requested review panel without T3 Code.
+description: Review code, plans, or copy in OpenCode with configured native models or authenticated Codex and Claude Code terminal reviewers. Use for a review panel without T3 Code.
 ---
 
 # OpenCode review
@@ -12,7 +12,7 @@ for target capture, manual risk assessment, reviewer briefs, and verification.
 ## Arguments
 
 ```text
-Use the opencode-review skill [target] [--reviewers N] [--round2] [--dry-run] [--timeout-seconds N]
+Use the opencode-review skill [target] [--mixed] [--terminal] [--reviewers N] [--round2] [--dry-run] [--timeout-seconds N]
 ```
 
 Target can be a path, PR, `staged`, branch, or document.
@@ -24,11 +24,25 @@ a separate triage API. Ordinary chair inference still uses the selected provider
 `--timeout-seconds` is the budget per seat, including rebuttal, default 600,
 range 1 to 3600. State any limit on enforcing this budget.
 
+## Mixed-model routing
+
+For `--mixed`, prefer already-configured native reviewer agents with distinct
+eligible models and verified review-only permissions. If those agents are not
+available, use [the terminal guide](references/terminal-review.md) to start fresh
+Codex and Claude Code sessions with existing local subscription logins.
+`--terminal` selects that CLI route explicitly. It does not require those accounts
+to be connected to OpenCode's provider settings.
+Probe logins without requesting or copying tokens. Print the selected route and
+panel before dispatch. Respect explicit model/provider choices and seat counts.
+Do not replace a failed subscription seat with an API-key route. If the requested
+mixed panel cannot be filled, report the gap before offering a native or chair
+fallback. Python 3.10+ and a POSIX host are needed only for the terminal route.
+
 ## Native OpenCode dispatch
 
 - Inspect the current tool schema and available subagent catalog. V1 uses the
   native Task tool; V2 uses `subagent`. Do not mix their arguments. Do not call
-  T3 tools, another provider CLI, or a separate API to fill a reviewer seat.
+  T3 tools or a separate API to fill a seat. Use the route above for external CLIs.
 - Prefer the installed `opencode-reviewer`. Install exactly one version of its
   definition as described in [the guide](README.md#install):
   [V1](agents/v1/opencode-reviewer.md) or [V2](agents/v2/opencode-reviewer.md).

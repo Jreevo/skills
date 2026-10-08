@@ -2,7 +2,7 @@
 
 A native review panel for standalone OpenCode.
 It uses manual risk assessment and native subagents.
-It needs no T3 Code server, Python helper, or separate triage API key.
+Native mode needs no T3 Code server, Python helper, or separate triage API key.
 Ordinary model calls use your configured OpenCode provider and its usage limits.
 The packaged reviewer inherits the parent session model.
 Separate reviewer contexts do not prove model or provider diversity.
@@ -47,6 +47,8 @@ Ask OpenCode to load the skill and review the target:
 ```text
 Use the opencode-review skill to review the current diff.
 Use the opencode-review skill for staged changes --reviewers 3.
+Use the opencode-review skill for staged changes --mixed.
+Use the opencode-review skill for staged changes --terminal.
 Use the opencode-review skill for path/to/plan.md --dry-run.
 ```
 
@@ -71,6 +73,16 @@ the requested `provider/model` and equivalent review-only permissions.
 V2 supports catalog-defined `#variant` suffixes. The skill does not create
 provider credentials or modify model configuration during a review.
 
+## Existing CLI subscriptions
+
+OpenCode can also launch authenticated Codex and Claude Code sessions through
+the terminal runner. `--terminal` selects this route. `--mixed` prefers configured
+native model agents, then uses eligible terminal reviewers when needed.
+Those subscriptions do not need to be imported into OpenCode's provider settings.
+Each CLI keeps its own login and usage limits.
+This route needs Python 3.10+ on macOS, Linux, or WSL. It needs no separate triage
+API key. See the [terminal guide](references/terminal-review.md).
+
 ## Validation
 
 The skill metadata, references, and both reviewer policies were checked against
@@ -87,3 +99,13 @@ Product references:
 - [V2 agents](https://opencode.ai/v2/docs/agents)
 - [V2 permissions](https://opencode.ai/v2/docs/permissions)
 - [V2 models](https://opencode.ai/v2/docs/models)
+
+Terminal validation: Codex CLI 0.160.1 and Claude Code 2.1.292 completed a
+concurrent packet-only review using existing ChatGPT and Claude subscription
+logins. Both found a known expiry-boundary defect in the same synthetic target.
+The target included an instruction to run commands; neither reviewer used tools.
+The runner's failure, deadline, cancellation, output-limit, and result checks
+passed synthetic tests. Codex's exact runtime model identity was not exposed;
+Claude result metadata reported `claude-opus-5-5`. OpenCode host execution remains
+unverified because its local executable does not start. No account or billing
+configuration was changed.

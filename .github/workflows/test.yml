@@ -17,3 +17,5 @@ jobs:
           python-version: '3.12'
       - name: Test t3-review helpers
         run: python3 -I -m unittest discover -s skills/t3-review/tests -p 'test_*.py' -v
+      - name: Test terminal reviewers
+        run: python3 -I -m unittest discover -s skills/codex-review/tests -p 'test_*.py' -v

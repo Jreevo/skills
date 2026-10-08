@@ -7,18 +7,40 @@ Each skill has its own folder in `skills/`. Keep its files together.
 
 | Skill | Host | Reviewers |
 | --- | --- | --- |
-| [codex-review](skills/codex-review/) | Standalone Codex | Native Codex agents using available GPT models |
-| [claude-review](skills/claude-review/) | Standalone Claude Code | Native Claude agents using available Claude models |
-| [opencode-review](skills/opencode-review/) | Standalone OpenCode | Native subagents using configured providers |
+| [codex-review](skills/codex-review/) | Standalone Codex | Native GPT agents, or Codex + Claude Code CLI reviewers with `--mixed` |
+| [claude-review](skills/claude-review/) | Standalone Claude Code | Native Claude agents, or Claude Code + Codex CLI reviewers with `--mixed` |
+| [opencode-review](skills/opencode-review/) | Standalone OpenCode | Configured native models, or Codex + Claude Code CLI reviewers |
 | [t3-review](skills/t3-review/) | T3 Code | Configured providers through T3 delegation |
 
 The standalone versions use separate reviewer contexts and different review lenses.
 Reviewers inherit the configured model by default. They do not promise model diversity.
-They use manual risk assessment and need no separate triage API key or Python helper.
+They use manual risk assessment and need no separate triage API key.
+Native review needs no Python helper. The optional terminal route needs Python
+3.10+ on macOS, Linux, or WSL to manage separate CLI sessions and their deadlines.
 OpenCode can use models from its configured providers. This skill inherits the
 parent model by default. Use `t3-review` for a panel managed through T3 delegation.
 It requires T3 Code, configured
 model providers, Python 3, and macOS. Catalog availability does not prove spare quota.
+
+## Use existing subscriptions
+
+Install Codex and Claude Code, then sign in through their normal CLI login flows.
+The skills can use those existing local logins for a mixed-provider review.
+A ChatGPT subscription does not authenticate Claude Code, and a Claude subscription
+does not authenticate Codex. Each CLI uses its own account and usage limits.
+
+```text
+Use $codex-review to review the current diff --mixed.
+/claude-review staged --mixed
+Use the opencode-review skill for the current diff --terminal.
+```
+
+The terminal runner uses a complete inline packet in fresh sessions. It removes
+API-key and parent-session environment overrides, requires subscription auth,
+disables reviewer tool access where supported, and runs in a private directory
+outside the source repository. It reports quota, login, CLI, and result failures.
+It does not install CLIs, copy login tokens, change billing, or fall back to API keys.
+See the [terminal guide](skills/codex-review/references/terminal-review.md).
 
 ## Install
 
